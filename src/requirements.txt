@@ -7,7 +7,7 @@ numpy
 duckdb
 imageio
 imageio-ffmpeg
-kaleido
+kaleido==0.1.0.post1
 Pillow
 
 
