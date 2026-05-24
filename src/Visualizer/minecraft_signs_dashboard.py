@@ -29,6 +29,24 @@ def _find_browser():
         found = _shutil_mod.which(name)
         if found: return found
     return None
+
+def _frame_html(fig, w, h):
+    bg  = fig.layout.paper_bgcolor or "#ffffff"
+    div = pio.to_html(
+        fig, full_html=False, include_plotlyjs=True,
+        config={"displayModeBar": False, "scrollZoom": False},
+        div_id="plot",
+    )
+    return (
+        '<!DOCTYPE html><html><head><meta charset="utf-8">'
+        '<style>'
+        '*{margin:0;padding:0;box-sizing:border-box}'
+        f'html,body{{width:{w}px;height:{h}px;overflow:hidden;background:{bg}}}'
+        f'#plot{{width:{w}px!important;height:{h}px!important}}'
+        '.js-plotly-plot,.plotly,.plot-container{width:100%!important;height:100%!important}'
+        '</style></head><body>' + div + '</body></html>'
+    )
+
 import dash_bootstrap_components as dbc
 from dash import Dash, dcc, html, Input, Output, State, ctx, no_update
 from dash_bootstrap_templates import ThemeSwitchAIO, load_figure_template
@@ -348,7 +366,8 @@ def build_figure(dated_df, undated_df, full_df, color_col, colorscale,
             ann.append(dict(
                 text=overlay_date, xref="paper", yref="paper",
                 x=0.99, y=0.03, showarrow=False, xanchor="right", yanchor="bottom",
-                font=dict(size=16, color=text_col),
+                font=dict(size=18, color=text_col, family="Arial Black"),
+                bgcolor="rgba(0,0,0,0.4)", borderpad=5,
             ))
         fig.update_layout(annotations=ann)
     return fig
@@ -870,8 +889,8 @@ def export_video(n_clicks, vid_title, fps, resolution,
                 fig = build_figure(sub, undtd, dtd, color_col, colorscale, msize,
                                    cam, dark, show_undated, view,
                                    overlay_title=title, overlay_date=lbl)
-                html = pio.to_html(fig, full_html=True, include_plotlyjs=(i == 0))
-                page.set_content(html)
+                fig.update_layout(width=w, height=h)
+                page.set_content(_frame_html(fig, w, h))
                 page.wait_for_timeout(1500)
                 p = os.path.join(tmpdir, f"frame_{i:05d}.png")
                 page.screenshot(path=p, full_page=False)
