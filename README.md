@@ -1,7 +1,7 @@
 # Minecraft Sign Speak
 
 ---
-A 2b2t sign visualizer tool made by lawnguy using the 1mill squared data provided to the public. 
+A 2b2t sign visualizer tool made by lawnguy with the help of Claude to speed things up, using the 1mill squared data provided to the public. 
 
 ---
 
