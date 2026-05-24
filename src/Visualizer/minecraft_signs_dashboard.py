@@ -854,9 +854,11 @@ def export_video(n_clicks, vid_title, fps, resolution,
         dl_name = f"signs_{dim}_{gran}{suffix}"
         return (f"Done — {len(steps)} frames, downloading as {dl_name}",
                 dcc.send_bytes(video_bytes, dl_name))
-    except Exception:
-        print(traceback.format_exc())
-        return "Export failed — check console for details", None
+    except Exception as e:
+        tb = traceback.format_exc()
+        print(tb)
+        short = str(e)[:200]
+        return f"Export failed: {short}", None
 
 app.run(
     host="0.0.0.0",
