@@ -1,0 +1,11 @@
+dash>=2.9
+dash-bootstrap-components
+dash-bootstrap-templates
+plotly
+pandas
+numpy
+duckdb
+imageio
+imageio-ffmpeg
+kaleido
+Pillow
