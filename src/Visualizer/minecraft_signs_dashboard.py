@@ -6,7 +6,8 @@ import os, traceback, threading, math, duckdb
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import tempfile, shutil
+import plotly.io as pio
+import tempfile, shutil, subprocess, imageio_ffmpeg
 import dash_bootstrap_components as dbc
 from dash import Dash, dcc, html, Input, Output, State, ctx, no_update
 from dash_bootstrap_templates import ThemeSwitchAIO, load_figure_template
@@ -456,10 +457,17 @@ app.layout = dbc.Container(fluid=True, className="px-3 py-2", children=[
                                    tooltip={"placement":"bottom","always_visible":False},
                                    className="mt-1 mb-0"),
                     ]),
+                    dbc.Col(children=[
+                        html.Small("Resolution", className="text-muted"),
+                        dcc.Dropdown(id="video-res",
+                            options=[{"label":"1920x1080","value":"1920x1080"},
+                                     {"label":"1280x720", "value":"1280x720"},
+                                     {"label":"854x480",  "value":"854x480"}],
+                            value="1280x720", clearable=False, className="mt-1"),
+                    ]),
                 ]),
-                dcc.Store(id="video-res", data="1280x720"),
                 html.Small(id="export-frame-est", className="text-muted fst-italic d-block mb-2"),
-                dbc.Button("Export & Download (HTML)", id="export-btn", color="primary",
+                dbc.Button("Export & Download", id="export-btn", color="primary",
                            size="sm", className="w-100 mb-2", n_clicks=0),
                 html.Small(id="export-status", className="text-muted fst-italic",
                            style={"wordBreak":"break-all"}),
@@ -805,10 +813,11 @@ def export_video(n_clicks, vid_title, fps, resolution,
         if not steps:
             return "No dated signs found in the current range", None
 
-        cam = VIEWS.get(view, VIEWS["Default 3D"])
-        title = (vid_title or "").strip() or None
+        w, h   = (int(x) for x in (resolution or "1280x720").split("x"))
+        cam    = VIEWS.get(view, VIEWS["Default 3D"])
+        title  = (vid_title or "").strip() or None
         fps_val = int(fps or 10)
-        frame_ms = int(1000 / fps_val)
+        tmpdir = tempfile.mkdtemp()
 
         def _sub_for_step(step):
             if anim_mode == "cumulative":
@@ -821,55 +830,59 @@ def export_video(n_clicks, vid_title, fps, resolution,
             sub = dtd[dtd["sign_date"].dt.to_period("M") == pd.Period(str(step), "M")].copy()
             return sub, pd.Timestamp(step).strftime("%B %Y")
 
-        plotly_frames = []
-        slider_steps  = []
-        for step in steps:
-            sub, lbl = _sub_for_step(step)
-            frame_fig = build_figure(sub, undtd, dtd, color_col, colorscale, msize,
-                                     cam, dark, show_undated, view,
-                                     overlay_title=title, overlay_date=lbl)
-            plotly_frames.append(go.Frame(
-                data=frame_fig.data,
-                layout=go.Layout(annotations=frame_fig.layout.annotations),
-                name=lbl,
-            ))
-            slider_steps.append(dict(
-                args=[[lbl], {"frame": {"duration": frame_ms, "redraw": True}, "mode": "immediate"}],
-                label=lbl, method="animate",
-            ))
-            print(f"[export] built frame: {lbl}")
+        from playwright.sync_api import sync_playwright
+        frame_paths = []
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch()
+            page = browser.new_page(viewport={"width": w, "height": h})
+            for i, step in enumerate(steps):
+                sub, lbl = _sub_for_step(step)
+                fig = build_figure(sub, undtd, dtd, color_col, colorscale, msize,
+                                   cam, dark, show_undated, view,
+                                   overlay_title=title, overlay_date=lbl)
+                html = pio.to_html(fig, full_html=True, include_plotlyjs=(i == 0))
+                page.set_content(html)
+                page.wait_for_timeout(800)
+                p = os.path.join(tmpdir, f"frame_{i:05d}.png")
+                page.screenshot(path=p, full_page=False)
+                frame_paths.append(p)
+                if (i + 1) % 5 == 0:
+                    print(f"[export] {i+1}/{len(steps)} frames rendered")
+            browser.close()
 
-        base_sub, base_lbl = _sub_for_step(steps[0])
-        base_fig = build_figure(base_sub, undtd, dtd, color_col, colorscale, msize,
-                                cam, dark, show_undated, view,
-                                overlay_title=title, overlay_date=base_lbl)
-        base_fig.frames = plotly_frames
-        base_fig.update_layout(
-            updatemenus=[dict(
-                type="buttons", showactive=False, x=0.05, y=0,
-                xanchor="right", yanchor="top",
-                buttons=[
-                    dict(label="▶ Play", method="animate",
-                         args=[None, {"frame": {"duration": frame_ms, "redraw": True},
-                                      "fromcurrent": True, "transition": {"duration": 0}}]),
-                    dict(label="⏸ Pause", method="animate",
-                         args=[[None], {"frame": {"duration": 0, "redraw": False},
-                                        "mode": "immediate", "transition": {"duration": 0}}]),
-                ],
-            )],
-            sliders=[dict(
-                active=0, x=0.07, y=0, len=0.93,
-                currentvalue=dict(prefix="", visible=True, xanchor="center"),
-                transition=dict(duration=0),
-                steps=slider_steps,
-            )],
-        )
+        suffix = ".mp4"
+        out = os.path.join(tempfile.gettempdir(), f"signs_export{suffix}")
+        try:
+            ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+            cmd = [
+                ffmpeg_exe, "-y",
+                "-framerate", str(fps_val),
+                "-i", os.path.join(tmpdir, "frame_%05d.png"),
+                "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart", out,
+            ]
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            if r.returncode != 0:
+                raise RuntimeError(r.stderr[-600:])
+            print(f"[export] MP4 OK")
+        except Exception as mp4_err:
+            print(f"[export] MP4 failed ({mp4_err}), falling back to GIF")
+            from PIL import Image as PILImage
+            suffix = ".gif"
+            out = os.path.join(tempfile.gettempdir(), f"signs_export{suffix}")
+            imgs = [PILImage.open(p) for p in frame_paths]
+            imgs[0].save(out, save_all=True, append_images=imgs[1:],
+                         duration=int(1000 / fps_val), loop=0, optimize=False)
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
-        html_bytes = base_fig.to_html(full_html=True, include_plotlyjs=True).encode("utf-8")
-        dl_name = f"signs_{dim}_{gran}.html"
-        print(f"[export] done — {len(steps)} frames")
+        with open(out, "rb") as f:
+            video_bytes = f.read()
+        os.unlink(out)
+
+        dl_name = f"signs_{dim}_{gran}{suffix}"
         return (f"Done — {len(steps)} frames · downloading as {dl_name}",
-                dcc.send_bytes(html_bytes, dl_name))
+                dcc.send_bytes(video_bytes, dl_name))
     except Exception as e:
         print(traceback.format_exc())
         return f"Export failed: {str(e)[:200]}", None
