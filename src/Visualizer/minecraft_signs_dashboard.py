@@ -833,7 +833,7 @@ def export_video(n_clicks, vid_title, fps, resolution,
         from playwright.sync_api import sync_playwright
         frame_paths = []
         with sync_playwright() as pw:
-            browser = pw.chromium.launch()
+            browser = pw.chromium.launch(executable_path=pw.chromium.executable_path)
             page = browser.new_page(viewport={"width": w, "height": h})
             for i, step in enumerate(steps):
                 sub, lbl = _sub_for_step(step)
