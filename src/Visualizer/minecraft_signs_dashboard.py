@@ -2,12 +2,33 @@
 # used claude to help speed up development
 # 5/19/26
 
-import os, traceback, threading, math, duckdb
+import os, sys, traceback, threading, math, duckdb, shutil as _shutil_mod
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import plotly.io as pio
 import tempfile, shutil, subprocess, imageio_ffmpeg
+
+def _find_browser():
+    if sys.platform == "win32":
+        for path in [
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        ]:
+            if os.path.exists(path): return path
+    elif sys.platform == "darwin":
+        for path in [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        ]:
+            if os.path.exists(path): return path
+    for name in ["google-chrome", "google-chrome-stable", "chromium-browser", "chromium", "microsoft-edge"]:
+        found = _shutil_mod.which(name)
+        if found: return found
+    return None
 import dash_bootstrap_components as dbc
 from dash import Dash, dcc, html, Input, Output, State, ctx, no_update
 from dash_bootstrap_templates import ThemeSwitchAIO, load_figure_template
@@ -466,6 +487,10 @@ app.layout = dbc.Container(fluid=True, className="px-3 py-2", children=[
                             value="1280x720", clearable=False, className="mt-1"),
                     ]),
                 ]),
+                html.Small("Granularity", className="text-muted"),
+                dbc.RadioItems(id="export-granularity",
+                    options=[{"label":"Day","value":"day"},{"label":"Week","value":"week"},{"label":"Month","value":"month"}],
+                    value="day", inline=True, class_name="small mb-2 mt-1"),
                 html.Small(id="export-frame-est", className="text-muted fst-italic d-block mb-2"),
                 dbc.Button("Export & Download", id="export-btn", color="primary",
                            size="sm", className="w-100 mb-2", n_clicks=0),
@@ -760,7 +785,7 @@ def update_plot(frame, view, color_col, colorscale, msize, anim_mode, gran,
 
 @app.callback(
     Output("export-frame-est","children"),
-    Input("granularity","value"),
+    Input("export-granularity","value"),
     Input("date-range","start_date"), Input("date-range","end_date"),
     State("dim-select","value"), State("filter-select","value"),
     State("text-search","value"),
@@ -791,7 +816,7 @@ def update_frame_estimate(gran, sd, ed, dim, filt, text):
     State("video-res","value"),
     State("dim-select","value"),    State("filter-select","value"),
     State("text-search","value"),   State("max-points","value"),
-    State("granularity","value"),   State("anim-mode","value"),
+    State("export-granularity","value"), State("anim-mode","value"),
     State("date-range","start_date"), State("date-range","end_date"),
     State("view-dropdown","value"), State("color-dropdown","value"),
     State("colorscale-dropdown","value"), State("size-slider","value"),
@@ -831,19 +856,14 @@ def export_video(n_clicks, vid_title, fps, resolution,
             return sub, pd.Timestamp(step).strftime("%B %Y")
 
         from playwright.sync_api import sync_playwright
-
-        _EDGE_PATHS = [
-            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
-        ]
-        _edge_exe = next((p for p in _EDGE_PATHS if os.path.exists(p)), None)
+        _browser_exe = _find_browser()
 
         frame_paths = []
         with sync_playwright() as pw:
-            if _edge_exe:
-                browser = pw.chromium.launch(executable_path=_edge_exe, headless=True, channel="msedge")
+            if _browser_exe:
+                browser = pw.chromium.launch(executable_path=_browser_exe, headless=True)
             else:
-                browser = pw.chromium.launch(executable_path=pw.chromium.executable_path, headless=True)
+                browser = pw.chromium.launch(headless=True)
             page = browser.new_page(viewport={"width": w, "height": h})
             for i, step in enumerate(steps):
                 sub, lbl = _sub_for_step(step)
