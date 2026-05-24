@@ -6,14 +6,10 @@ import os, traceback, threading, math, duckdb
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import imageio.v2 as iio
-import plotly.io as pio
 import tempfile, shutil
-import subprocess, imageio_ffmpeg
 import dash_bootstrap_components as dbc
 from dash import Dash, dcc, html, Input, Output, State, ctx, no_update
 from dash_bootstrap_templates import ThemeSwitchAIO, load_figure_template
-
 
 LIGHT_THEME = dbc.themes.FLATLY
 DARK_THEME  = dbc.themes.SLATE
@@ -417,7 +413,7 @@ app.layout = dbc.Container(fluid=True, className="px-3 py-2", children=[
                     html.Small("Granularity", className="text-muted"),
                     dbc.RadioItems(id="granularity",
                         options=[{"label":"Day","value":"day"},{"label":"Week","value":"week"},{"label":"Month","value":"month"}],
-                        value="day", inline=True, class_name="small mb-2 mt-1"),
+                        value="month", inline=True, class_name="small mb-2 mt-1"),
                     html.Small("Step Mode", className="text-muted"),
                     dbc.RadioItems(id="anim-mode",
                         options=[{"label":"Cumulative","value":"cumulative"},{"label":"Single step","value":"single"}],
@@ -460,16 +456,10 @@ app.layout = dbc.Container(fluid=True, className="px-3 py-2", children=[
                                    tooltip={"placement":"bottom","always_visible":False},
                                    className="mt-1 mb-0"),
                     ]),
-                    dbc.Col(children=[
-                        html.Small("Resolution", className="text-muted"),
-                        dcc.Dropdown(id="video-res",
-                            options=[{"label":"1920x1080","value":"1920x1080"},
-                                     {"label":"1280x720", "value":"1280x720"},
-                                     {"label":"854x480",  "value":"854x480"}],
-                            value="1920x1080", clearable=False, className="mt-1"),
-                    ]),
                 ]),
-                dbc.Button("Export & Download", id="export-btn", color="primary",
+                dcc.Store(id="video-res", data="1280x720"),
+                html.Small(id="export-frame-est", className="text-muted fst-italic d-block mb-2"),
+                dbc.Button("Export & Download (HTML)", id="export-btn", color="primary",
                            size="sm", className="w-100 mb-2", n_clicks=0),
                 html.Small(id="export-status", className="text-muted fst-italic",
                            style={"wordBreak":"break-all"}),
@@ -761,6 +751,31 @@ def update_plot(frame, view, color_col, colorscale, msize, anim_mode, gran,
 
 
 @app.callback(
+    Output("export-frame-est","children"),
+    Input("granularity","value"),
+    Input("date-range","start_date"), Input("date-range","end_date"),
+    State("dim-select","value"), State("filter-select","value"),
+    State("text-search","value"),
+)
+def update_frame_estimate(gran, sd, ed, dim, filt, text):
+    try:
+        df, _, _ = fetch_signs(dim, filt, (text or "").strip(), 50_000)
+        if df.empty:
+            return ""
+        dtd = _anim_clip(df[df["sign_date"].notna()].copy())
+        sd_d = pd.to_datetime(sd).date() if sd else (dtd["sign_date"].dt.date.min() if not dtd.empty else None)
+        ed_d = pd.to_datetime(ed).date() if ed else (dtd["sign_date"].dt.date.max() if not dtd.empty else None)
+        steps = anim_steps(dtd, gran, sd_d, ed_d) if (sd_d and ed_d) else []
+        if not steps:
+            return "No dated signs in range"
+        secs = len(steps) * 3
+        est = f"{secs//60}m {secs%60}s" if secs >= 60 else f"~{secs}s"
+        return f"{len(steps)} frames · est. render time {est}"
+    except Exception:
+        return ""
+
+
+@app.callback(
     Output("export-status","children"),
     Output("download-video","data"),
     Input("export-btn","n_clicks"),
@@ -778,7 +793,6 @@ def update_plot(frame, view, color_col, colorscale, msize, anim_mode, gran,
 def export_video(n_clicks, vid_title, fps, resolution,
                  dim, filt, text, max_pts, gran, anim_mode, sd, ed,
                  view, color_col, colorscale, msize, show_undated, dark):
-
     try:
         df, _, _ = fetch_signs(dim, filt, (text or "").strip(), int(max_pts or 5000))
         if df.empty:
@@ -789,76 +803,76 @@ def export_video(n_clicks, vid_title, fps, resolution,
         ed_d = pd.to_datetime(ed).date() if ed else (dtd["sign_date"].dt.date.max() if not dtd.empty else None)
         steps = anim_steps(dtd, gran, sd_d, ed_d) if (sd_d and ed_d) else []
         if not steps:
-            return "No dated signs with dates found in the current range", None
+            return "No dated signs found in the current range", None
 
-        w, h = (int(x) for x in (resolution or "1920x1080").split("x"))
         cam = VIEWS.get(view, VIEWS["Default 3D"])
         title = (vid_title or "").strip() or None
-        tmpdir = tempfile.mkdtemp()
-        frames = []
+        fps_val = int(fps or 10)
+        frame_ms = int(1000 / fps_val)
 
-        for i, step in enumerate(steps):
+        def _sub_for_step(step):
             if anim_mode == "cumulative":
-                sub, date_lbl = dtd[dtd["sign_date"].dt.date <= step].copy(), str(step)
-            elif gran == "day":
-                sub, date_lbl = dtd[dtd["sign_date"].dt.date == step].copy(), str(step)
-            elif gran == "week":
-                sub = dtd[(dtd["sign_date"].dt.date >= step) &
-                          (dtd["sign_date"].dt.date <= step + pd.Timedelta(days=6))].copy()
-                date_lbl = f"Week of {step}"
-            else:
-                sub = dtd[dtd["sign_date"].dt.to_period("M") == pd.Period(str(step),"M")].copy()
-                date_lbl = pd.Timestamp(step).strftime("%B %Y")
+                return dtd[dtd["sign_date"].dt.date <= step].copy(), str(step)
+            if gran == "day":
+                return dtd[dtd["sign_date"].dt.date == step].copy(), str(step)
+            if gran == "week":
+                end_w = step + pd.Timedelta(days=6)
+                return dtd[(dtd["sign_date"].dt.date >= step) & (dtd["sign_date"].dt.date <= end_w)].copy(), f"Week of {step}"
+            sub = dtd[dtd["sign_date"].dt.to_period("M") == pd.Period(str(step), "M")].copy()
+            return sub, pd.Timestamp(step).strftime("%B %Y")
 
-            fig = build_figure(sub, undtd, dtd, color_col, colorscale, msize,
-                               cam, dark, show_undated, view,
-                               overlay_title=title, overlay_date=date_lbl)
-            p = os.path.join(tmpdir, f"frame_{i:05d}.png")
-            pio.write_image(fig, p, width=w, height=h, scale=1)
-            raw = iio.imread(p)
-            frames.append((raw[:, :, :3] if raw.ndim == 3 and raw.shape[2] == 4 else raw).astype(np.uint8))
-            if (i + 1) % 10 == 0:
-                print(f"[export] frame {i+1}/{len(steps)}")
+        plotly_frames = []
+        slider_steps  = []
+        for step in steps:
+            sub, lbl = _sub_for_step(step)
+            frame_fig = build_figure(sub, undtd, dtd, color_col, colorscale, msize,
+                                     cam, dark, show_undated, view,
+                                     overlay_title=title, overlay_date=lbl)
+            plotly_frames.append(go.Frame(
+                data=frame_fig.data,
+                layout=go.Layout(annotations=frame_fig.layout.annotations),
+                name=lbl,
+            ))
+            slider_steps.append(dict(
+                args=[[lbl], {"frame": {"duration": frame_ms, "redraw": True}, "mode": "immediate"}],
+                label=lbl, method="animate",
+            ))
+            print(f"[export] built frame: {lbl}")
 
-        suffix = ".mp4"
-        out = os.path.join(tempfile.gettempdir(), f"signs_export{suffix}")
-        try:
-            ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
-            cmd = [
-                ffmpeg_exe, "-y",
-                "-framerate", str(int(fps or 10)),
-                "-i", os.path.join(tmpdir, "frame_%05d.png"),
-                "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                "-movflags", "+faststart", out,
-            ]
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-            if r.returncode != 0:
-                raise RuntimeError(r.stderr[-600:])
-            print(f"[export] MP4 OK via ffmpeg")
-        except Exception as mp4_err:
-            print(f"[export] MP4 failed ({mp4_err}), falling back to GIF")
-            from PIL import Image as PILImage
-            suffix = ".gif"
-            out = os.path.join(tempfile.gettempdir(), f"signs_export{suffix}")
-            delay = int(1000 / (fps or 10))
-            imgs = [PILImage.fromarray(f) for f in frames]
-            imgs[0].save(out, save_all=True, append_images=imgs[1:],
-                         duration=delay, loop=0, optimize=False)
-        finally:
-            shutil.rmtree(tmpdir, ignore_errors=True)
+        base_sub, base_lbl = _sub_for_step(steps[0])
+        base_fig = build_figure(base_sub, undtd, dtd, color_col, colorscale, msize,
+                                cam, dark, show_undated, view,
+                                overlay_title=title, overlay_date=base_lbl)
+        base_fig.frames = plotly_frames
+        base_fig.update_layout(
+            updatemenus=[dict(
+                type="buttons", showactive=False, x=0.05, y=0,
+                xanchor="right", yanchor="top",
+                buttons=[
+                    dict(label="▶ Play", method="animate",
+                         args=[None, {"frame": {"duration": frame_ms, "redraw": True},
+                                      "fromcurrent": True, "transition": {"duration": 0}}]),
+                    dict(label="⏸ Pause", method="animate",
+                         args=[[None], {"frame": {"duration": 0, "redraw": False},
+                                        "mode": "immediate", "transition": {"duration": 0}}]),
+                ],
+            )],
+            sliders=[dict(
+                active=0, x=0.07, y=0, len=0.93,
+                currentvalue=dict(prefix="", visible=True, xanchor="center"),
+                transition=dict(duration=0),
+                steps=slider_steps,
+            )],
+        )
 
-        with open(out, "rb") as f:
-            video_bytes = f.read()
-        os.unlink(out)
-
-        dl_name = f"signs_{dim}_{gran}{suffix}"
-        return (f"Done — {len(steps)} frames, downloading as {dl_name}",
-                dcc.send_bytes(video_bytes, dl_name))
+        html_bytes = base_fig.to_html(full_html=True, include_plotlyjs=True).encode("utf-8")
+        dl_name = f"signs_{dim}_{gran}.html"
+        print(f"[export] done — {len(steps)} frames")
+        return (f"Done — {len(steps)} frames · downloading as {dl_name}",
+                dcc.send_bytes(html_bytes, dl_name))
     except Exception as e:
-        tb = traceback.format_exc()
-        print(tb)
-        short = str(e)[:200]
-        return f"Export failed: {short}", None
+        print(traceback.format_exc())
+        return f"Export failed: {str(e)[:200]}", None
 
 app.run(
     host="0.0.0.0",
