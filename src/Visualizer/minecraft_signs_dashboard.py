@@ -831,9 +831,19 @@ def export_video(n_clicks, vid_title, fps, resolution,
             return sub, pd.Timestamp(step).strftime("%B %Y")
 
         from playwright.sync_api import sync_playwright
+
+        _EDGE_PATHS = [
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        ]
+        _edge_exe = next((p for p in _EDGE_PATHS if os.path.exists(p)), None)
+
         frame_paths = []
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(executable_path=pw.chromium.executable_path)
+            if _edge_exe:
+                browser = pw.chromium.launch(executable_path=_edge_exe, headless=True, channel="msedge")
+            else:
+                browser = pw.chromium.launch(executable_path=pw.chromium.executable_path, headless=True)
             page = browser.new_page(viewport={"width": w, "height": h})
             for i, step in enumerate(steps):
                 sub, lbl = _sub_for_step(step)
@@ -842,7 +852,7 @@ def export_video(n_clicks, vid_title, fps, resolution,
                                    overlay_title=title, overlay_date=lbl)
                 html = pio.to_html(fig, full_html=True, include_plotlyjs=(i == 0))
                 page.set_content(html)
-                page.wait_for_timeout(800)
+                page.wait_for_timeout(1500)
                 p = os.path.join(tmpdir, f"frame_{i:05d}.png")
                 page.screenshot(path=p, full_page=False)
                 frame_paths.append(p)
