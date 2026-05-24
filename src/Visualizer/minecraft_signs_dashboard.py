@@ -19,7 +19,7 @@ LIGHT_THEME = dbc.themes.FLATLY
 DARK_THEME  = dbc.themes.SLATE
 load_figure_template(["flatly", "slate"])
 
-_parent = os.path.dirname(os.getcwd())
+_parent = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DIM_FILES = {
     "end":    os.path.join(_parent, "data", "signs_pretty_end.csv"      ).replace("\\", "/"),
     "nether": os.path.join(_parent, "data", "signs_pretty_nether.csv"   ).replace("\\", "/"),
