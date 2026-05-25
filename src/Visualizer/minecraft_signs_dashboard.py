@@ -626,7 +626,7 @@ def toggle_anim(play, pause, speed, dim, filt, mode, disabled):
 def advance_frame(_, dim, filt, mode, gran, frame, sd, ed, max_pts, text):
     if ctx.triggered_id in {"dim-select","filter-select","display-mode","granularity"}: return 0
     try:
-        df, _, _ = fetch_signs(dim, filt, text, int(max_pts or 5000))
+        df, _, _ = fetch_signs(dim, filt, text, 5000 if max_pts is None else int(max_pts))
         if df.empty: return 0
         dated = _anim_clip(df[df["sign_date"].notna()].copy())
         if dated.empty: return 0
@@ -729,7 +729,7 @@ def update_plot(frame, view, color_col, colorscale, msize, anim_mode, gran,
     try:
         cam = VIEWS.get(view, VIEWS["Default 3D"])
         text = (text or "").strip()
-        max_pts = int(max_pts or 5000)
+        max_pts = 5000 if max_pts is None else int(max_pts)
         title = (vid_title or "").strip() or None
         _empty = lambda: build_figure(pd.DataFrame(), pd.DataFrame(), pd.DataFrame(),
                                        color_col, colorscale, msize, cam, dark, show_undated, view)
@@ -846,7 +846,7 @@ def export_video(n_clicks, vid_title, fps, resolution,
                  dim, filt, text, max_pts, gran, anim_mode, sd, ed,
                  view, color_col, colorscale, msize, show_undated, dark):
     try:
-        df, _, _ = fetch_signs(dim, filt, (text or "").strip(), int(max_pts or 5000))
+        df, _, _ = fetch_signs(dim, filt, (text or "").strip(), 5000 if max_pts is None else int(max_pts))
         if df.empty:
             return "No data to export", None
         dtd = _anim_clip(df[df["sign_date"].notna()].copy())
