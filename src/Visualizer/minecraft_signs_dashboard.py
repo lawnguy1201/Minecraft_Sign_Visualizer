@@ -2,7 +2,7 @@
 # used claude to help speed up development
 # 5/19/26
 
-import os, sys, traceback, threading, math, duckdb, shutil as _shutil_mod
+import os, sys, json, traceback, threading, math, duckdb, shutil as _shutil_mod
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
@@ -890,8 +890,18 @@ def export_video(n_clicks, vid_title, fps, resolution,
                                    cam, dark, show_undated, view,
                                    overlay_title=title, overlay_date=lbl)
                 fig.update_layout(width=w, height=h)
-                page.set_content(_frame_html(fig, w, h))
-                page.wait_for_timeout(1500)
+                if i == 0:
+                    # First frame: load full page with Plotly.js embedded
+                    page.set_content(_frame_html(fig, w, h), timeout=180_000)
+                    page.wait_for_timeout(2500)
+                else:
+                    # Subsequent frames: swap data in-place — no JS re-parse, no timeout
+                    fig_dict = json.loads(fig.to_json())
+                    page.evaluate(
+                        "([data, layout]) => Plotly.react('plot', data, layout)",
+                        [fig_dict["data"], fig_dict["layout"]],
+                    )
+                    page.wait_for_timeout(1000)
                 p = os.path.join(tmpdir, f"frame_{i:05d}.png")
                 page.screenshot(path=p, full_page=False)
                 frame_paths.append(p)
